@@ -77,7 +77,7 @@ jobs:
           dataFactoryName: adf-destination-2
           armTemplateFile: ARMTemplateForFactory.json
           armTemplateParametersFile: ARMTemplateParametersForFactory.json
-          additionalParameters: factoryName=adf-destination    
+          additionalParameters: factoryName=adf-destination-2 
       
     
   
