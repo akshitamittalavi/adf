@@ -1,40 +1,76 @@
-# This is a basic workflow to help you deploy an ADF ARM template to a higher environment
-
-# For more information on GitHub Actions for Azure: https://github.com/Azure/Actions
-# For more samples to get started with GitHub Action workflows to deploy to Azure: https://github.com/Azure/actions-workflow-samples
-
 on:
   push:
     branches:
-      - adf_publish
-  workflow_dispatch:
+    - main
 
+permissions:
+      id-token: write
+      contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    name: 'This deploys to Production'
     steps:
-    - uses: actions/checkout@v3
 
-    - name: Azure Login
-      uses: Azure/login@v1.4.3
+    - uses: actions/checkout@v3
+# Installs Node and the npm packages saved in your package.json file in the build
+    - name: Setup Node.js environment
+      uses: actions/setup-node@v3.4.1
       with:
-        # Paste output of `az ad sp create-for-rbac` as value of secret variable: AZURE_CREDENTIALS
-        creds: ${{secrets.AZURE_CREDENTIALS}}
+        node-version: 14.x
         
-    - name: Deploy Azure Resource Manager (ARM) Template
-      uses: Azure/arm-deploy@v1.0.6
+    - name: install ADF Utilities package
+      run: npm install
+      working-directory: ${{github.workspace}}/ADFroot/build  # (1) provide the folder location of the package.json file
+        
+# Validates all of the Data Factory resources in the repository. You'll get the same validation errors as when "Validate All" is selected.
+    - name: Validate
+      run: npm run build validate ${{github.workspace}}/ADFroot/ /subscriptions/41ae3075-2ae0-4d8a-8233-c602b5f8ef28/resourceGroups/adf-source-rg/providers/Microsoft.DataFactory/factories/adf-source # (2) The validate command needs the root folder location of your repository where all the objects are stored. And the 2nd parameter is the resourceID of the ADF instance 
+      working-directory: ${{github.workspace}}/ADFroot/build
+ 
+
+    - name: Validate and Generate ARM template
+      run: npm run build export ${{github.workspace}}/ADFroot/ /subscriptions/41ae3075-2ae0-4d8a-8233-c602b5f8ef28/resourceGroups/adf-source-rg/providers/Microsoft.DataFactory/factories/adf-source "ExportedArmTemplate"  # (3) The build command, as validate, needs the root folder location of your repository where all the objects are stored. And the 2nd parameter is the resourceID of the ADF instance. The 3rd parameter is the exported ARM template artifact name 
+      working-directory: ${{github.workspace}}/ADFroot/build
+ 
+# In order to leverage the artifact in another job, we need to upload it with the upload action 
+    - name: upload artifact
+      uses: actions/upload-artifact@v3
       with:
-        # Provide the scope of the deployment. Valid values are: 'resourcegroup', 'managementgroup', 'subscription'
-        scope: 'resourcegroup'
-        # Target resource group of the deployment.
-        resourceGroupName: 'adf-destination-rg'
-        # Specify the path to the ADF ARM template. In this scenario, the workflow is in the same branch, 
-        # hence we only add the folder and arm template name to the path
-        template: ./adf-source/ARMTemplateForFactory.json
-        # Incremental (only add resources to resource group) or Complete (remove extra resources from resource group) or Validate (only validates the template).
-        deploymentMode: Incremental
-        # Supply deployment parameter values. In this simple scenario, 
-        # I am only passing the name of the target ADF to which this is being deployed
-        parameters: factoryName=adf-destination
+        name: ExportedArmTemplate # (4) use the same artifact name you used in the previous export step
+        path: ${{github.workspace}}/ADFroot/build/ExportedArmTemplate
+        
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    
+ # we 1st download the previously uploaded artifact so we can leverage it later in the release job     
+      - name: Download a Build Artifact
+        uses: actions/download-artifact@v3.0.2
+        with:
+          name: ExportedArmTemplate # (5) Artifact name 
+
+
+      - name: Login via Az module
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true 
+
+      - name: data-factory-deploy
+        uses: Azure/data-factory-deploy-action@v1.2.0
+        with:
+          resourceGroupName: adf-destination-rg # (6) your target ADF resource group name
+          dataFactoryName: adf-destination # (7) your target ADF name
+          armTemplateFile: ARMTemplateForFactory.json # (8) ARM template file name ARMTemplateForFactory.json
+          armTemplateParametersFile: ARMTemplateParametersForFactory.json # (9) ARM template parameters file name ARMTemplateParametersForFactory.json
+          additionalParameters: factoryName=adf-destination # (10) Parameters which will be replaced in the ARM template. Expected format 'key1=value key2=value keyN=value'. At the minimum here you should provide the target ADF name parameter. Check the ARMTemplateParametersForFactory.json file for all the parameters that are expected in your scenario
+         
+          # skipAzModuleInstallation:  # Parameters which skip the Az module installation. Optional, default is false.      
+    
+      
+    
+  
